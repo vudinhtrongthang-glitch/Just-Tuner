@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <title>Just Tuner</title>
+    <style>
+        :root { --in-tune: #00DB92; --bg: #000; }
+        body {
+            margin: 0; background: var(--bg); color: #fff;
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            display: flex; flex-direction: column; align-items: center;
+            justify-content: center; height: 100vh; overflow: hidden;
+        }
+
+        /* Nút khởi tạo */
+        #start-btn {
+            width: 65px; height: 65px; background: #fff; border-radius: 50%;
+            cursor: pointer; position: absolute; z-index: 1000;
+            transition: all 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        .btn-active { transform: scale(0); opacity: 0; pointer-events: none; }
+
+        /* App Container */
+        #tuner-app {
+            display: flex; flex-direction: column; align-items: center;
+            opacity: 0; pointer-events: none;
+            transition: all 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+            transform: scale(0.6) translateY(60px);
+        }
+        #tuner-app.open { opacity: 1; pointer-events: auto; transform: scale(1) translateY(0); }
+
+        /* CỐ ĐỊNH VỊ TRÍ CHỮ NOTE */
+        .note-container {
+            height: 160px; /* Cố định chiều cao để không đẩy các phần tử khác */
+            display: flex; align-items: center; justify-content: center;
+            width: 100%;
+        }
+
+        #note {
+            font-size: 5rem; font-weight: 300; margin: 0;
+            transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            color: #fff; line-height: 1;
+        }
+        .active-note { 
+            font-size: 8.5rem !important; 
+            font-weight: 900 !important; 
+            color: var(--in-tune) !important;
+        }
+
+        /* Gauge */
+        .gauge { position: relative; width: 300px; height: 150px; margin-top: 10px; }
+        
+        .arc-outline {
+            position: absolute; width: 300px; height: 150px;
+            border: 2px solid rgba(255,255,255,0.4); border-bottom: none;
+            border-radius: 150px 150px 0 0; bottom: 0; z-index: 2;
+        }
+        
+        #pie {
+            position: absolute; bottom: 0; left: 0; width: 300px; height: 150px;
+            background: var(--in-tune); border-radius: 150px 150px 0 0;
+            clip-path: polygon(50% 100%, 35% 0, 65% 0);
+            opacity: 0.1; transition: all 0.3s ease; z-index: 1;
+        }
+        .pie-active { opacity: 0.9 !important; filter: blur(1px); }
+
+        #needle {
+            position: absolute; bottom: 0; left: 50%; width: 2px; height: 150px;
+            background: #fff; transform-origin: bottom center; z-index: 10;
+            transform: translateX(-50%) rotate(0deg);
+            transition: transform 0.15s linear;
+        }
+        .needle-active { background: var(--in-tune) !important; width: 3px !important; }
+
+        /* 6 chấm Guitar */
+        .string-bar { width: 300px; display: flex; justify-content: space-between; margin-top: 60px; }
+        .dot { width: 10px; height: 10px; background: #222; border-radius: 50%; position: relative; transition: all 0.3s ease; }
+        .dot-glow { background: #fff; transform: scale(2.5); }
+        .dot-success { background: var(--in-tune) !important; }
+        .dot-success::after {
+            content: ''; position: absolute; top: 50%; left: 50%;
+            width: 100%; height: 100%; border: 1px solid var(--in-tune);
+            border-radius: 50%; transform: translate(-50%, -50%);
+            animation: ripple 1.5s infinite;
+        }
+        @keyframes ripple {
+            0% { transform: translate(-50%, -50%) scale(1); opacity: 0.8; }
+            100% { transform: translate(-50%, -50%) scale(5); opacity: 0; }
+        }
+    </style>
+</head>
+<body>
+
+    <div id="start-btn" onclick="openApp()"></div>
+
+    <div id="tuner-app">
+        <div class="note-container">
+            <h1 id="note">--</h1>
+        </div>
+        
+        <div class="gauge">
+            <div class="arc-outline"></div>
+            <div id="pie"></div>
+            <div id="needle"></div>
+        </div>
+
+        <div class="string-bar">
+            <div class="dot" id="s0"></div>
+            <div class="dot" id="s1"></div>
+            <div class="dot" id="s2"></div>
+            <div class="dot" id="s3"></div>
+            <div class="dot" id="s4"></div>
+            <div class="dot" id="s5"></div>
+        </div>
+    </div>
+
+    <script>
+        const app = document.getElementById('tuner-app');
+        const btn = document.getElementById('start-btn');
+        const noteEl = document.getElementById('note');
+        const needle = document.getElementById('needle');
+        const pie = document.getElementById('pie');
+
+        const GUITAR = [
+            {n:'E', f:82.41}, {n:'A', f:110.00}, {n:'D', f:146.83},
+            {n:'G', f:196.00}, {n:'B', f:246.94}, {n:'E', f:329.63}
+        ];
+        const NOTES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+        let audioCtx, analyser, data, smoothP = 0;
+
+        async function openApp() {
+            try {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                const stream = await navigator.mediaDevices.getUserMedia({audio: true});
+                const source = audioCtx.createMediaStreamSource(stream);
+                analyser = audioCtx.createAnalyser();
+                analyser.fftSize = 4096;
+                data = new Float32Array(analyser.fftSize);
+                source.connect(analyser);
+
+                btn.classList.add('btn-active');
+                app.classList.add('open');
+                tick();
+            } catch(e) { alert("Vui lòng cấp quyền Micro!"); }
+        }
+
+        function tick() {
+            requestAnimationFrame(tick);
+            analyser.getFloatTimeDomainData(data);
+            const p = getPitch(data, audioCtx.sampleRate);
+
+            if (p && p > 60 && p < 450) {
+                smoothP = smoothP * 0.7 + p * 0.3;
+                const midi = Math.round(12 * Math.log2(smoothP/440)) + 69;
+                const name = NOTES[midi % 12];
+                const cents = 1200 * Math.log2(smoothP/(440 * Math.pow(2,(midi-69)/12)));
+
+                noteEl.innerText = name;
+                needle.style.transform = `translateX(-50%) rotate(${Math.max(-50, Math.min(50, cents)) * 0.9}deg)`;
+
+                const ok = Math.abs(cents) <= 8;
+                noteEl.className = ok ? 'active-note' : '';
+                pie.className = ok ? 'pie-active' : '';
+                needle.className = ok ? 'needle-active' : '';
+
+                GUITAR.forEach((t, i) => {
+                    const d = document.getElementById(`s${i}`);
+                    const diff = Math.abs(12 * Math.log2(smoothP/t.f));
+                    d.className = 'dot';
+                    if (diff < 0.75) {
+                        d.classList.add('dot-glow');
+                        if (ok && name === t.n) d.classList.add('dot-success');
+                    }
+                });
+            }
+        }
+
+        function getPitch(buf, sr) {
+            let rms = 0;
+            for (let v of buf) rms += v*v;
+            if (Math.sqrt(rms/buf.length) < 0.015) return null;
+            let c = new Float32Array(buf.length).fill(0);
+            for (let i=0; i<buf.length; i++)
+                for (let j=0; j<buf.length-i; j++) c[i] += buf[j]*buf[j+i];
+            let d=0; while (c[d]>c[d+1]) d++;
+            let maxv=-1, maxp=-1;
+            for (let i=d; i<buf.length; i++) if(c[i]>maxv){maxv=c[i]; maxp=i;}
+            return sr/maxp;
+        }
+    </script>
+</body>
+</html>
